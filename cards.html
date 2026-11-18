@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print ID cards</title>
+<style>
+  @page { size: A4; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px system-ui, sans-serif; color: #111; background: #fff; }
+  #bar { padding: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #eef1ef; }
+  button { font: inherit; padding: 10px 16px; border: 0; border-radius: 8px; background: #1b2320; color: #fff; }
+  #grid { display: grid; grid-template-columns: repeat(2, 90mm); gap: 0; justify-content: center; padding: 8px 0; }
+  .card { width: 90mm; height: 55mm; border: 0.3mm dashed #999; padding: 5mm; display: flex;
+    align-items: center; justify-content: space-between; gap: 4mm; break-inside: avoid; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-size: 15pt; font-weight: 700; line-height: 1.15; }
+  .meta { margin-top: 2mm; font-size: 10pt; color: #444; }
+  .qrbox { text-align: center; }
+  .qr { width: 32mm; height: 32mm; padding: 2.5mm; background: #fff; }
+  .qr svg { width: 100%; height: 100%; display: block; }
+  .id { font-size: 8pt; margin-top: 1mm; letter-spacing: .5px; }
+  @media print { #bar { display: none; } }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="print">Print cards</button>
+  <span id="msg">Loading students…</span>
+</div>
+<div id="grid"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+const API_URL = 'https://script.google.com/macros/s/AKfycbzazi4x1aw31-YiNBsbF32cJ7OkIfsIsY1ltzLqwgT_JJTzkJEh9o02fqE9oLwrxukG/exec';
+const KEY = 'bayotsiandrew'; // same as in Code.gs
+
+function esc(t) { return String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function qrSvg(text) {
+  const q = qrcode(0, 'M');
+  q.addData(text);
+  q.make();
+  return q.createSvgTag(4, 0);
+}
+
+async function init() {
+  try {
+    const r = await (await fetch(API_URL + '?key=' + KEY)).json();
+    if (r.error) throw new Error(r.error);
+    document.getElementById('grid').innerHTML = r.students.map(s => `
+      <div class="card">
+        <div class="info">
+          <div class="name">${esc(s.name)}</div>
+          <div class="meta">${esc([s.grade, s.course].filter(Boolean).join(' · '))}</div>
+        </div>
+        <div class="qrbox">
+          <div class="qr">${qrSvg(String(s.id))}</div>
+          <div class="id">${esc(s.id)}</div>
+        </div>
+      </div>`).join('');
+    document.getElementById('msg').textContent = r.students.length + ' cards ready. Print at 100% scale on A4.';
+  } catch (e) {
+    document.getElementById('msg').textContent = 'Could not load students. Check API_URL and KEY.';
+  }
+}
+document.getElementById('print').onclick = () => window.print();
+init();
+</script>
+</body>
+</html>

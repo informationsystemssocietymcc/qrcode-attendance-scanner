@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Event check-in</title>
+<style>
+  :root { --bg:#f5f6f4; --ink:#1b2320; --mute:#66706b; --card:#fff; --ok:#1f9d55; --bad:#d64545; --warn:#c98a10; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141917; --ink:#eef1ef; --mute:#97a29c; --card:#1f2623; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--ink);
+    padding: env(safe-area-inset-top) 14px env(safe-area-inset-bottom); }
+  body.ok { background:var(--ok); } body.bad { background:var(--bad); } body.warn { background:var(--warn); }
+  header { display:flex; gap:10px; align-items:center; padding:12px 0; }
+  select { flex:1; font:inherit; padding:12px; border-radius:10px; border:1px solid var(--mute); background:var(--card); color:var(--ink); }
+  #count { font-size:22px; font-weight:700; white-space:nowrap; }
+  #reader { width:100%; border-radius:14px; overflow:hidden; background:#000; min-height:240px; }
+  #result { margin:14px 0; padding:16px; border-radius:14px; background:var(--card); min-height:84px; }
+  #result b { font-size:24px; display:block; }
+  #result span { color:var(--mute); }
+  .row { display:flex; gap:8px; margin-bottom:10px; }
+  input { flex:1; font:inherit; padding:12px; border-radius:10px; border:1px solid var(--mute); background:var(--card); color:var(--ink); }
+  button { font:inherit; padding:12px 16px; border-radius:10px; border:0; background:var(--ink); color:var(--bg); }
+  #status { color:var(--mute); font-size:14px; text-align:center; padding-bottom:16px; }
+</style>
+</head>
+<body>
+<header>
+  <select id="event"></select>
+  <div id="count">0/0</div>
+</header>
+<div id="reader"></div>
+<div id="result"><span>Point the camera at a student QR code.</span></div>
+<div class="row">
+  <input id="manual" placeholder="Type student ID" autocomplete="off">
+  <button id="go">Check in</button>
+</div>
+<div class="row"><button id="undo">Undo last scan</button></div>
+<div id="status">Loading…</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+const API_URL = 'https://script.google.com/macros/s/AKfycbzazi4x1aw31-YiNBsbF32cJ7OkIfsIsY1ltzLqwgT_JJTzkJEh9o02fqE9oLwrxukG/exec';
+const KEY = 'bayotsiandrew'; // same as in Code.gs
+
+const $ = id => document.getElementById(id);
+let students = {}, events = [], done = new Set(), queue = [], last = '', lastAt = 0, history = [];
+
+function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } }
+function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+queue = load('queue', []);
+
+async function init() {
+  try {
+    const r = await (await fetch(API_URL + '?key=' + KEY)).json();
+    if (r.error) throw new Error(r.error);
+    save('data', r);
+  } catch (e) { $('status').textContent = 'Offline. Using saved list.'; }
+  const d = load('data', null);
+  if (!d) { $('status').textContent = 'No data yet. Connect once to download the student list.'; return; }
+  d.students.forEach(s => students[s.id] = s);
+  events = d.events;
+  $('event').innerHTML = events.map(e => `<option>${e}</option>`).join('');
+  $('event').value = load('event', events[0]) || events[0];
+  window.serverScans = d.scans;
+  rebuild();
+  startCamera();
+}
+
+function rebuild() {
+  const ev = $('event').value;
+  done = new Set((window.serverScans || []).filter(s => s.event === ev).map(s => s.id));
+  queue.filter(q => q.event === ev).forEach(q => done.add(q.id));
+  updateCount();
+}
+function updateCount() { $('count').textContent = done.size + '/' + Object.keys(students).length; }
+
+function show(cls, title, sub) {
+  document.body.className = cls;
+  $('result').innerHTML = `<b>${title}</b><span>${sub || ''}</span>`;
+  if (navigator.vibrate) navigator.vibrate(cls === 'ok' ? 80 : [80, 60, 80]);
+  setTimeout(() => document.body.className = '', 900);
+}
+
+function checkIn(raw) {
+  const id = String(raw).trim();
+  const now = Date.now();
+  if (id === last && now - lastAt < 3000) return; // cooldown
+  last = id; lastAt = now;
+  const ev = $('event').value;
+  if (!id) return;
+  if (done.has(id)) {
+    const s = students[id];
+    return show('warn', 'Already checked in', s ? s.name : id);
+  }
+  const s = students[id];
+  const item = { ts: now, event: ev, id };
+  queue.push(item); history.push(item); done.add(id);
+  save('queue', queue); updateCount(); sync();
+  if (s) show('ok', s.name, [s.grade, s.course].filter(Boolean).join(' · '));
+  else show('bad', 'Unknown ID', id + ' saved as guest');
+}
+
+function startCamera() {
+  const scanner = new Html5Qrcode('reader');
+  scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, t => checkIn(t), () => {})
+    .catch(() => $('status').textContent = 'Camera blocked. Allow camera access and use HTTPS.');
+}
+
+let syncing = false;
+async function sync() {
+  if (syncing || !queue.length) { status(); return; }
+  syncing = true;
+  const batch = queue.slice();
+  try {
+    const r = await (await fetch(API_URL, { method: 'POST', body: JSON.stringify({ key: KEY, scans: batch }) })).json();
+    if (r.error) throw new Error(r.error);
+    queue = queue.filter(q => !batch.includes(q));
+    save('queue', queue);
+  } catch (e) {}
+  syncing = false; status();
+}
+function status() {
+  $('status').textContent = queue.length ? queue.length + ' waiting to sync' : 'All scans saved';
+}
+
+$('go').onclick = () => { checkIn($('manual').value); $('manual').value = ''; };
+$('undo').onclick = () => {
+  const u = history.pop();
+  if (!u || !queue.includes(u)) return show('warn', 'Nothing to undo', 'Only unsynced scans can be undone.');
+  queue = queue.filter(q => q !== u); done.delete(u.id); last = '';
+  save('queue', queue); updateCount(); show('warn', 'Undone', u.id);
+};
+$('event').onchange = () => { save('event', $('event').value); rebuild(); };
+
+setInterval(sync, 10000);
+window.addEventListener('online', sync);
+init();
+</script>
+</body>
+</html>
